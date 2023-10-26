@@ -1,0 +1,334 @@
+---
+title: ""
+author: "Antonio Checa"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+    html_document :
+      css: IMP_ReportCSS.css
+      code_folding: hide
+      number_sections: false
+      toc: true
+      toc_float: 
+        collapsed: false
+        smooth_scroll: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(knitr)
+library(tidyverse)
+library(DT)
+library(htmltools)
+library(gridExtra)
+library(writexl)
+
+
+# set default options
+opts_chunk$set(echo = FALSE,
+               message = FALSE,
+               fig.align="center",
+               fig.width = 5,
+               fig.height = 5,
+               dpi = 120,
+               fig.retina = 3)
+
+```
+
+```{r, echo=FALSE}
+htmltools::img(src = knitr::image_uri(file.path("imp_logo.jpg")), 
+               alt = 'logo', 
+               style = 'position:absolute; top:0; right:0; padding:70px;')
+```
+
+
+
+
+# 1. Aim (s)
+
+Inspection of data quality for acquired SL data in plasma for project SMMSCF-34
+Inspecting of peaks passing QC
+Creation of final file to report results
+
+
+# 2. Data import and summary
+
+- Data was imported into R. 
+
+- The final number of samples per group was summarized.
+
+
+```{r import, echo = TRUE}
+
+importData <- readRDS(file = "Data/File_SamplesSelected_Set.RDS")
+
+samples_file_notreplaced <- importData$samples_file_notreplaced 
+samples_file_replaced <- importData$samples_file_replaced 
+
+compound_names <- importData$compound_names #Keep names from previous analysis
+
+compoundInfo <- importData$compoundInfo
+rm(importData)
+
+# Summarize injections (Excluded calibration curves and conditioning)
+
+
+
+DT::datatable(samples_file_replaced %>% 
+  group_by(Sample_type) %>%
+  summarize("Number of samples" = n()))
+
+DT::datatable(samples_file_replaced %>% 
+  group_by(Sample_type, cohort) %>%
+  summarize("Number of samples" = n()))
+
+
+```
+
+
+
+
+# 4. Quality Summary {.tabset}
+
+A graph is performed per compound
+
+- Individual plots of quantified sphingolipids in plaque
+
+- Allows to inspect instrumental variations in the quantification of the individual species.
+
+- The QC of pooled plasma is a pooled mix of all samples
+
+- %CV for QCs are reported on a table
+
+- Graphs are scaled to include 1.3 x 99% of the samples for visualization purposes
+
+- Values represent concentrations of the compounds already normalized by the extraction volume
+
+- QC does not represent the samples, so values are not representative of the real variance
+
+
+## 4.1 Quality summary
+
+ 
+```{r qcnonfilter, echo = TRUE, fig.width= 10, fig.height= 6}
+
+#Summary of CVExt Serum
+
+DT::datatable(samples_file_replaced %>% 
+                filter(Sample_type == "QCExt", SMMS_ID != 46) %>%
+                pivot_longer(compound_names[,2], names_to = "Compound", values_to = "Conc") %>%
+                group_by(Compound) %>%  
+                summarize("%CV" = round(sd(Conc, na.rm = TRUE)/mean(Conc, na.rm = TRUE)*100,1)),
+                caption = "Plasma. Summary of %CV QCExt by Compound, All Included")
+
+
+
+```
+
+
+## 4.2 SL plots Plaque not normalized Samples and QC
+
+```{r plots GOMall, results="asis", echo = TRUE, warning=FALSE, fig.width=10, fig.height=5}
+
+#Plot compounds by injection order
+
+#Generate plots
+
+
+  injordplot <- samples_file_replaced %>% filter(Sample_type == "Sample" | Sample_type == "QCExt" 
+                                         | Sample_type == "BLExt") %>%
+                                             filter(Injection_order != 463) %>% 
+                                          arrange(desc(Sample_type))
+                                    
+  
+
+for (i in compound_names[,2])   {
+  
+  
+
+  compound <- i
+  
+  
+  axis.graphtitle.text <- element_text(face = "bold", color = "black", size = 12) #Label style
+  axis.graph.text <- element_text(face = "bold", color = "black", size = 8)
+  
+  axis.limit.value <- quantile(injordplot[,i], prob = 0.95, na.rm=TRUE)*1.2 # 40% extra limit for each compound. Quantiles are used to have most of the compounds on the graph. Extreme outliers may be out.
+  
+    axis.limit.valueq75 <- quantile(injordplot[,i], prob = 0.95, na.rm=TRUE)*1.2 # 20% extra limit for each compound. Quantiles are used to focus on the most common detected values.
+
+  
+  #Create graph Sample ID
+  
+  
+p <- ggplot(injordplot, aes(`Injection_order`, unlist(injordplot[,i]))) +
+              theme_classic() +   
+              geom_point(aes(color = Sample_type), size = 3, alpha = 0.6) +
+              scale_colour_manual(values = c("Black","Blue","Orange")) +
+           #   ylim(c(0,axis.limit.value)) +
+              labs(x="Injection order", y = compound) + 
+              theme(legend.position="bottom", axis.text.x=element_text(angle = 0, hjust = 0.5, vjust = 0), 
+                    axis.title = axis.graphtitle.text, axis.text = axis.graph.text)
+
+
+print(i)  
+
+plot(p)
+
+}
+
+
+
+
+```
+
+
+----------
+
+
+## 5.1 Sphingolipid plots
+
+- All reported compounds plots per cohort
+
+## 5.1 Samples by Diagnosis
+
+- Plots per Diagnosis Not normalized and Normalized
+
+```{r plots GOMDia, results="asis", echo = TRUE, warning=FALSE, fig.width=6, fig.height=8}
+
+
+#Plot compounds by injection order
+
+#Generate plots
+
+
+for (i in compound_names[,2])   {
+  
+  
+  injordplot <- samples_file_replaced %>% filter(Sample_type == "Sample", Replicated == "R01")
+  
+  compound <- i
+  
+  axis.graphtitle.text <- element_text(face = "bold", color = "black", size = 12) #Label style
+  axis.graph.text <- element_text(face = "bold", color = "black", size = 8)
+  
+  axis.limit.value <- quantile(injordplot[,i], prob = 1, na.rm=TRUE)*1.3 # 40% extra limit for each compound. Quantiles are used to have most of the compounds on the graph. Extreme outliers may be out.
+
+  
+  #Create graph Sample ID
+  
+  
+p <- ggplot(injordplot, aes(`cohort`, unlist(injordplot[,i]))) +
+              theme_classic() +   
+              scale_colour_manual(values = c("Grey", "Red", "Blue", "Orange")) +
+              scale_fill_manual(values = c("Grey", "Red", "Blue", "Orange")) +
+              geom_boxplot(aes(fill = cohort), alpha = 0.1) +
+              geom_point(aes(color = cohort), size = 4, alpha = 0.5) +
+              ylim(c(0,axis.limit.value)) +
+              labs(x="Cohort", y = compound) + 
+              theme(legend.position="bottom", axis.text.x=element_text(angle = 0, hjust = 0.5, vjust = 0), 
+                    axis.title = axis.graphtitle.text, axis.text = axis.graph.text) 
+
+  
+
+
+
+
+print(i)  
+
+grid.arrange(p, nrow=1)
+  
+}
+
+
+```
+
+
+
+# 6. Selection of samples
+
+Finally, samples are selected as a combination of confirmed detection, presence in blanks and presence in at least 5 samples.
+
+Different Tables are Exported to be included in the final report.
+
+
+
+```{r}
+
+
+# Select compounds to be included. Includes final filter by %CV and technical judgement
+
+compoundInfo_final<- compoundInfo %>% filter(Report == "YES") %>%
+                              select(-"Integration",-"our.coments",-"Included", -"Detected",
+                                      -"Include",-"Report",-"Use_type")
+
+
+compoundInfo_excluded <- compoundInfo %>% filter(Included == "YES", Report == "NO") %>% 
+                                       select(-"Integration",-"our.coments",-"Included", -"Detected",
+                                      -"Include",-"Report",-"Use_type")
+
+compound_excluded <- compoundInfo_excluded %>% select(Compound_name) %>% as.vector()
+
+compound_included<- compoundInfo_final %>% select(Compound_name) %>% as.vector()
+
+smetadata <- colnames(samples_file_replaced [1:35])
+
+finalfile_names_plasma <- samples_file_replaced %>% select(smetadata, compound_included[,1])
+
+
+
+# Export files to merge in a the final report.
+# This can be done with xlsx package for direct organization in Sheets but there are troubles with Java and Biomedicum computers
+# Doing it with write_xlsx will be more practical (the files are edited later anyway)
+
+write_xlsx(finalfile_names_plasma, "FinalResults/ResultsFile_Replaced.xlsx") # The final datatable
+
+write_xlsx(compoundInfo_final, "FinalResults/ReportedCompoundMetadata_Replaced.xlsx") 
+write_xlsx(compoundInfo_excluded, "FinalResults/ReportedCompoundMetadataEx_Replaced.xlsx") 
+
+#Save file for future R data processing
+
+list_selected_data <- list(finalfile_names_plasma = finalfile_names_plasma,
+                           compoundInfo_final = compoundInfo_final,
+                           compoundInfo_excluded = compoundInfo_excluded)
+
+saveRDS(list_selected_data, file = "FinalResults/FinalData_Set_SL_Replaced.RDS")
+
+
+```
+
+
+# 7. Final considerations {.tabset}
+
+List of compounds reported and excluded from the final results
+
+## 7.1. Compounds included
+
+```{r}
+
+DT::datatable(compoundInfo_final,
+  caption = "Summary of Compounds included")
+
+```
+
+## 7.2 Compounds excluded
+
+```{r}
+
+DT::datatable(compoundInfo_excluded,
+  caption = "Summary of Compounds included")
+
+```
+
+
+
+# 8. Session Information
+
+Packages used for the creation of this file
+
+```{r session, echo = TRUE, warning=FALSE}
+
+sessionInfo()
+
+```
+
+
