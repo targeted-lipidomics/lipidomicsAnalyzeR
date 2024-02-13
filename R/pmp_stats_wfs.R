@@ -19,5 +19,5 @@ pmp_wf =
                             feature_max=50) +
   #structToolbox::pareto_scale() +
   structToolbox::log_transform() +
-  structToolbox::mean_centre()+
-  PCA(number_components=5)
+  structToolbox::mean_centre()#+
+  #structToolbox::PCA(number_components=5)

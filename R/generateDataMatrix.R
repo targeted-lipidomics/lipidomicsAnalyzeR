@@ -1,65 +1,76 @@
 # Function to combine data matrices
+
+#- TargetLynx data were combined and processed (SNR, missing values, batch correction).
+
+#In the case of selecting data type concentration:
+#  - The concentration predicted from TargetLynx using the calibration curve (ng/mL or Conc.) is normalised such that:
+
+#  conc = conc * (std_vol / sample_vol) * (sample_IS / std_IS)
+
+
 generateDataMatrix = function(fdata,
                               metadata,
                               lcms_fns,
                               datatype = "Area",
-                              tl_headers = c("ID","Name","Area", "Conc.", "Response"),
+                              tl_headers = c("ID", "Name","Area", "ng/mL", "Response", "S/N"),
                               use_type ="Ratio",
                               snr = 5,
                               blank_filter = 5,
                               replaceNA = F,
                               batch_correction = F,
-                              qc_label = "Sample",
-                              factor_name = "Sample_type"){
+                              bc_qc_label = "Sample",
+                              bc_factor_name = "Sample_type",
+                              bc_header = "extract_batch",
+                              keep_samples = c("Blank", "Sample", "QC"),
+                              keep_sample_head = "Sample_type"){
 
   # Select feature names to extract
-  fnames <- fdata %>% filter(Include == "YES" & Use_type == use_type) %>% select("Compound")
+  fnames <- fdata %>% filter(Report_peak == "YES") %>% select("Compound")
+
+  #Load lcms data
+  lcms <- do.call(rbind, lapply(lcms_fns, read.csv, header=T)) %>%
+    janitor::row_to_names(row_number = 6, remove_row = F, remove_rows_above = F) %>%
+    rename(ID = 1) %>%
+    select(tl_headers)
+
+  # Generate table from TargetLynx output and trim
+  lcms_table <- extractTable(lcms) %>%
+    subset(Name != "")
+
+  out_table =  lcms_table %>%
+    distinct() %>%
+    select("ID","Name", datatype) %>%         # Select the column you want to pivot longer
+    group_by(ID) %>%                        # These two lines to avoid repeated values
+    pivot_wider(names_from = "ID", values_from = datatype) %>%
+    select(Name, fnames[,1]) %>%
+    tibble::column_to_rownames("Name") %>%
+    mutate_at(fnames[,1], as.numeric)
+
+  if(snr != FALSE){
+    snr_table = lcms_table %>%
+      distinct() %>%
+      select("ID","Name", "S/N") %>%         # Select the column you want to pivot longer
+      group_by(ID) %>%                        # These two lines to avoid repeated values
+      pivot_wider(names_from = "ID", values_from = "S/N") %>%
+      select(Name, fnames[,1]) %>%
+      tibble::column_to_rownames("Name") %>%
+      mutate_at(fnames[,1], as.numeric)
+
+    out_table[snr_table < snr] = NA
+
+  }
 
   # Empty final matrix to add to
   out_matrix = data.frame(matrix(nrow = 0, ncol = length(fnames[,1])))
   colnames(out_matrix) = fnames[,1]
 
-  for(fn_ind in 1:length(lcms_fns)){
 
-    # Select fn from vectors
-    lcms_fn = lcms_fns[fn_ind]
-
-    #Load lcms data
-    lcms <- read.csv(lcms_fn, header = T) %>%
-      select(tl_headers)
+  for(batch in unique(metadata[[bc_header]])){
 
     # Filter metadata by batch and Include column
     metadata_batch <- metadata %>%
-      subset(Chrom_Batch == fn_ind) %>%
+      subset(.[[bc_header]] == batch) %>%
       filter(Include == "YES")
-
-
-    # Generate table from TargetLynx output and trim
-    lcms_table <- extractTable(lcms) %>%
-      subset(Name != "")
-
-    out_table =  lcms_table %>%
-      select("ID","Name", datatype) %>%         # Select the column you want to pivot longer
-      group_by(ID) %>%                        # These two lines to avoid repeated values
-      pivot_wider(names_from = "ID", values_from = datatype) %>%
-      select(Name, fnames[,1]) %>%
-      tibble::column_to_rownames("Name") %>%
-      mutate_at(fnames[,1], as.numeric)
-
-
-
-    if(snr != FALSE){
-      snr_table = lcms_table %>%
-        select("ID","Name", "S.N") %>%         # Select the column you want to pivot longer
-        group_by(ID) %>%                        # These two lines to avoid repeated values
-        pivot_wider(names_from = "ID", values_from = "S.N") %>%
-        select(Name, fnames[,1]) %>%
-        tibble::column_to_rownames("Name") %>%
-        mutate_at(fnames[,1], as.numeric)
-
-      out_table[snr_table < snr] = NA
-
-    }
 
     if(blank_filter != FALSE){
 
@@ -89,22 +100,34 @@ generateDataMatrix = function(fdata,
       }
     }
 
-    # Remove everything but real samples
-    sample_names = metadata_batch$Name[which(metadata$Sample_type == "Sample")]
+    # Keep only samples of interest
+    sample_names = metadata_batch$Name[which(metadata_batch[[keep_sample_head]] %in% keep_samples)]
 
-    out_table = subset(out_table, row.names(out_table) %in% sample_names)
+    out_table_batch = subset(out_table, row.names(out_table) %in% sample_names)
 
 
     # Calculate the concentration of lipid in each sample - TO BE COMPLETED
-    if(datatype == "Conc."){
+        # conc from cal curve (ng/mL) - based on known conc of cal mixes and adjustment factor for each std group
+    # To find conc in each sample
+      # conc = conc * (std_vol / sample_vol) * (sample_IS / std_IS)
 
-      return("FAIL - not implemented code to calculate concentration in biological samples")
-      # conc based on cal curve is ng/mL
-      # Step 1 = Multiply by volume of cal curve injected (mL)
-          # Gives the amount of lipid per sample (ng) ???
+    if(datatype %in% c("Conc.", "ng/mL")){
 
-      # Step 2 = Divide by the change in volume (extracted to analysed): Amount of lipid / vol of plasma
-          # Gives the conc of lipid in each sample prior to sample prep (ng / mL)
+      sample_IS_vol_uL = unique(metadata_batch$sample_IS_vol_uL)
+      cal_IS_vol_uL = unique(metadata_batch$cal_IS_vol_uL)
+      sample_volume_uL = unique(metadata_batch$sample_volume_uL)
+      cal_vol_uL = unique(metadata_batch$cal_vol_uL)
+
+      if( all(c(length(sample_IS_vol_uL), length(cal_IS_vol_uL), length(sample_volume_uL), length(cal_vol_uL)) == 1)){
+
+        IS_fact = sample_IS_vol_uL / cal_IS_vol_uL
+        vol_fact = cal_vol_uL / sample_volume_uL
+
+        out_table_batch = out_table_batch * vol_fact * IS_fact
+
+      } else{
+        return("FAIL - variable volumes, implement sample wise (not written yet)")
+      }
     }
 
 
@@ -115,7 +138,7 @@ generateDataMatrix = function(fdata,
     # First calculate the minimum values that will replace NA (20% of the minimum value reported, including all samples)
 
     if(replaceNA == T){
-      min_vals = apply(out_table, 2, FUN = min, na.rm=T)
+      min_vals = apply(out_table_batch, 2, FUN = min, na.rm=T)
 
       for(col_idx in 1:length(min_vals)){
 
@@ -123,35 +146,36 @@ generateDataMatrix = function(fdata,
 
         if(!is.infinite(min_val)){
 
-          temp_col = out_table[,col_idx]
+          temp_col = out_table_batch[,col_idx]
           temp_col = ifelse(is.na(temp_col), (min_val * 0.2), temp_col)
 
-          out_table[,col_idx] = temp_col
+          out_table_batch[,col_idx] = temp_col
         }
       }
     }
 
     # Concatenate files
     out_matrix <- rbind(out_matrix,
-                        out_table)
+                        out_table_batch)
 
   }
 
   fdata_output = fdata %>%
-    select(Compound, PUFAS, Pathways, Enzymes, Precursors, Double_bond,
-           RT, Polarity, SRM1, SRM2)
+    subset(Compound %in% colnames(out_matrix)) #%>%
+    #select(Export, Compound, PUFAS, Pathways, Enzymes, Precursors, Double_bond,
+    #       RT, Polarity, SRM1, SRM2)
 
 
   # Create dataset experiment
   lcms_experiment = DatasetExperiment(data=out_matrix,
-                                      sample_meta=metadata %>% subset(Sample_type == "Sample"),
+                                      sample_meta=metadata[which(metadata[[keep_sample_head]] %in% keep_samples), ],
                                       variable_meta=fdata_output)
 
   if(batch_correction == T){
 
     bc_wf =
-      batch_correct(qc_label = qc_label,
-                    factor_name = factor_name)
+      batch_correct(qc_label = bc_qc_label,
+                    factor_name = bc_factor_name)
 
     lcms_experiment = model_apply(bc_wf, lcms_experiment)
   }
