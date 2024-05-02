@@ -1,6 +1,5 @@
 lipidomicsAnalyzeR
 ==============================================
-|Git|
 
 Tools and workflow to process and analyse targeted lipidomics data from TargetLynx.
 
