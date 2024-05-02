@@ -1,0 +1,558 @@
+---
+title: "Quality control report"
+author: "Antonio Checa and Matt Smith"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+    html_document :
+      css: IMP_ReportCSS.css
+      code_folding: hide
+      number_sections: false
+      toc: true
+      toc_float: 
+        collapsed: false
+        smooth_scroll: true
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+# set default options
+knitr::opts_chunk$set(echo = FALSE,
+               message = FALSE,
+               warning = FALSE,
+               fig.align="center",
+               fig.width = 5,
+               fig.height = 5,
+               dpi = 120,
+               fig.retina = 3)
+
+```
+
+```{r, echo=FALSE}
+htmltools::img(src = knitr::image_uri(sprintf("%s/vignettes/imp_logo.jpg", base_dir)), 
+               alt = 'logo', 
+               style = 'position:absolute; top:0; right:0; padding:70px;')
+```
+
+
+# 1. Aim (s)
+
+Inspection of data quality for acquired targeted lipidomics data.
+Inspecting of peaks passing QC
+Creation of final file to report results
+
+
+# 2. Data import and summary
+
+- Data was imported into R. 
+
+- The final number of samples per group was summarized.
+
+
+```{r import, echo = FALSE}
+
+importData <- readRDS(file = out_RDS)
+
+metadata <- importData$sample_meta
+data_matrix <- importData$data
+
+compoundInfo <- importData$variable_meta
+compound_names <- compoundInfo$Compound
+
+# Summarize injections (Excluded calibration curves and conditioning)
+
+DT::datatable(metadata %>% 
+  group_by_(.dots=`inc_factor`) %>%
+  summarize("Number of samples" = n()))
+
+DT::datatable(metadata %>% 
+  group_by_(.dots=c(`inc_factor`, `factor_bps1`, `factor_bps2`)) %>%
+  summarize("Number of samples" = n()))
+
+
+```
+
+# 3. Quality Summary {.tabset}
+
+A graph is performed per compound
+
+- Individual plots of quantified sphingolipids in plaque
+
+- Allows to inspect instrumental variations in the quantification of the individual species.
+
+- The QC of pooled plasma is a pooled mix of all samples
+
+- %CV for QCs are reported on a table
+
+- Graphs are scaled to include 1.3 x 99% of the samples for visualization purposes
+
+- Values represent concentrations of the compounds already normalized by the extraction volume
+
+- QC does not represent the samples, so values are not representative of the real variance
+
+
+## 3.1 Quality summary
+
+```{r qcnonfilter, echo = FALSE, fig.width= 10, fig.height= 6}
+
+#Summary
+filter_wf = 
+    filter_smeta(mode = "include",
+               levels = qc_name, 
+               factor_name = qc_factor)
+
+QC_data =  predicted(model_apply(filter_wf, importData))
+
+QC_data = QC_data$data %>% 
+  mutate(name = QC_data$sample_meta[[qc_id_header]]) %>%
+  tidyr::pivot_longer(QC_data$variable_meta$Compound, names_to = "Compound", values_to = "value") %>%
+  group_by(name, Compound) %>%  
+  summarize("%CV" = round(sd(value, na.rm = TRUE)/mean(value, na.rm = TRUE)*100,1))
+
+
+DT::datatable(QC_data,
+                caption = "Summary of %CV by Compound, All Included")
+
+```
+
+
+# 4. Exploratory analysis {.tabset}
+
+PCA analysis of data to check structure and guide which features are of interest.
+
+Pre-processing
+
+- 50% feature filter
+
+- 50% sample filter
+
+- knn missing value imputation
+
+- pareto scale
+
+- mean centre
+
+## 4.0
+
+Scroll Right!!!
+
+## 4.1 PCA showing `r pca_factor2`
+
+- General PCA
+
+```{r, results="asis", echo = FALSE, include=T, warning=FALSE, fig.width=6, fig.height=5}
+
+# https://bioconductor.org/packages/release/bioc/vignettes/structToolbox/inst/doc/data_analysis_omics_using_the_structtoolbox.html
+
+# Set up peak matrix processing method and PCA.
+pmp_wf =
+  filter_smeta(mode = "include",
+               levels = inc_levels_qc,
+               factor_name = inc_factor_qc) +
+  mv_feature_filter(threshold = 49,
+                    method = "QC",
+                    factor_name = feature_filter_factor,
+                    qc_label = feature_filter_levels) +
+  mv_sample_filter(mv_threshold = 49) +
+  mv_feature_filter(threshold = 49,
+                    method = "across",
+                    factor_name = inc_factor_qc) +
+  filter_smeta(mode = "include",
+               levels = inc_levels,
+               factor_name = inc_factor) +
+  structToolbox::knn_impute(neighbours=3,
+                            sample_max=50,
+                            feature_max=50) +
+  structToolbox::pareto_scale() +
+  #structToolbox::log_transform() +
+  structToolbox::mean_centre()+
+  structToolbox::PCA(number_components=4)
+
+# Apply the peak matrix processing and PCA method
+general_pmp_wf = model_apply(pmp_wf, combined_datamatrices)
+
+# Plot PCA score 1
+scores_p = pca_scores_plot(factor_name=c(pca_factor1),
+                           points_to_label = 'none')
+chart_plot(scores_p,general_pmp_wf[length(general_pmp_wf)])
+
+# Plot PCA score 2
+scores_p = pca_scores_plot(factor_name=c(pca_factor2),
+                           points_to_label = 'none')
+chart_plot(scores_p,general_pmp_wf[length(general_pmp_wf)])
+
+# Plot PCA loadings
+loadings_df = general_pmp_wf[length(general_pmp_wf)]@loadings %>%
+  tibble::rownames_to_column("feature")
+
+ggplot(loadings_df, aes(x=PC1, y=PC2)) +
+  geom_point(size=2, alpha=1, shape=23) +
+  theme_Publication() +
+  stat_ellipse(type='norm', level=0.9) +
+  ggrepel::geom_text_repel(size=2.5, label.padding = unit(0.2, "lines"),
+                           col="red", aes(label=feature), nudge_x = 0, nudge_y = 0.01)
+```
+
+## 4.2 PCA subset by `r pca_factor1` {.tabset .tabset-fade}
+
+- PCA subset by levels of the argument 'pca_factor1'
+
+```{r, results="asis", echo = FALSE, include=T, warning=FALSE, fig.width=6, fig.height=5}
+# https://bioconductor.org/packages/release/bioc/vignettes/structToolbox/inst/doc/data_analysis_omics_using_the_structtoolbox.html
+
+levs = unique(predicted(general_pmp_wf[length(general_pmp_wf)])$sample_meta[[pca_factor1]])
+
+for(lev in levs){
+  pmp_wf =
+    filter_smeta(mode = "include",
+                 levels = inc_levels_qc,
+                 factor_name = inc_factor_qc) +
+    filter_smeta(mode = "exclude",
+                 levels = as.character(levs[which(levs != lev)]),
+                 factor_name = pca_factor1) +
+    mv_feature_filter(threshold = 49,
+                      method = "QC",
+                      factor_name = feature_filter_factor,
+                      qc_label = feature_filter_levels) +
+    mv_sample_filter(mv_threshold = 49) +
+    mv_feature_filter(threshold = 49,
+                      method = "across",
+                      factor_name = inc_factor_qc) +
+    filter_smeta(mode = "include",
+                 levels = inc_levels,
+                 factor_name = inc_factor) +
+    structToolbox::knn_impute(neighbours=3,
+                              sample_max=50,
+                              feature_max=50) +
+    structToolbox::pareto_scale() +
+    #structToolbox::log_transform() +
+    structToolbox::mean_centre()+
+    structToolbox::PCA(number_components=4)
+  
+  # Apply the peak matrix processing and PCA method
+  apply_pmp_wf = model_apply(pmp_wf, combined_datamatrices)
+  
+  # Plot PCA score 2
+  scores_p = pca_scores_plot(factor_name=c(pca_factor2),
+                             points_to_label = 'none')
+  p = chart_plot(scores_p,apply_pmp_wf[length(apply_pmp_wf)]) + theme(legend.position = "right", legend.direction = "vertical")
+  
+  # Plot PCA loadings
+  loadings_df = apply_pmp_wf[length(apply_pmp_wf)]@loadings %>%
+    tibble::rownames_to_column("feature")
+  
+  p1 = ggplot(loadings_df, aes(x=PC1, y=PC2)) +
+    geom_point(size=2, alpha=1, shape=23) +
+    theme_Publication() +
+    stat_ellipse(type='norm', level=0.9) +
+    ggrepel::geom_text_repel(size=2.5, label.padding = unit(0.2, "lines"),
+                             col="red", aes(label=feature), nudge_x = 0, nudge_y = 0.01)
+  
+  leg <- cowplot::get_legend(p)
+  
+  ###### PLOT
+  cat( paste('### ', lev, '\n' ) )
+  
+  grid.arrange(p + theme(legend.position = "none"),
+               p1 + theme(legend.position = "none"),
+               leg,
+               layout_matrix = rbind(c(1, 1, 1, 3),
+                                     c(2, 2, 2, 3)),
+               top = sprintf("%s", lev))
+  
+  cat('\n \n')
+  
+}
+
+```
+
+## 4.3 PCA subset by `r pca_factor2` {.tabset .tabset-fade}
+
+- PCA subset by levels of the argument 'pca_factor2'
+
+```{r, results="asis", echo = FALSE, include=T, warning=FALSE, fig.width=6, fig.height=5}
+# https://bioconductor.org/packages/release/bioc/vignettes/structToolbox/inst/doc/data_analysis_omics_using_the_structtoolbox.html
+
+levs = unique(predicted(general_pmp_wf[length(general_pmp_wf)])$sample_meta[[pca_factor2]])
+
+for(lev in levs){
+  pmp_wf =
+    filter_smeta(mode = "include",
+                 levels = inc_levels_qc,
+                 factor_name = inc_factor_qc) +
+    filter_smeta(mode = "exclude",
+                 levels = as.character(levs[which(levs != lev)]),
+                 factor_name = pca_factor2) +
+    mv_feature_filter(threshold = 49,
+                      method = "QC",
+                      factor_name = feature_filter_factor,
+                      qc_label = feature_filter_levels) +
+    mv_sample_filter(mv_threshold = 49) +
+    mv_feature_filter(threshold = 49,
+                      method = "across",
+                      factor_name = inc_factor_qc) +
+    filter_smeta(mode = "include",
+                 levels = inc_levels,
+                 factor_name = inc_factor) +
+    structToolbox::knn_impute(neighbours=3,
+                              sample_max=50,
+                              feature_max=50) +
+    structToolbox::pareto_scale() +
+    #structToolbox::log_transform() +
+    structToolbox::mean_centre()+
+    structToolbox::PCA(number_components=4)
+  
+  # Apply the peak matrix processing and PCA method
+  apply_pmp_wf = model_apply(pmp_wf, combined_datamatrices)
+  
+  # Plot PCA score 2
+  scores_p = pca_scores_plot(factor_name=c(pca_factor1),
+                             points_to_label = 'none')
+  p = chart_plot(scores_p,apply_pmp_wf[length(apply_pmp_wf)]) + theme(legend.position = "right", legend.direction = "vertical")
+  
+  # Plot PCA loadings
+  loadings_df = apply_pmp_wf[length(apply_pmp_wf)]@loadings %>%
+    tibble::rownames_to_column("feature")
+  
+  p1 = ggplot(loadings_df, aes(x=PC1, y=PC2)) +
+    geom_point(size=2, alpha=1, shape=23) +
+    theme_Publication() +
+    stat_ellipse(type='norm', level=0.9) +
+    ggrepel::geom_text_repel(size=2.5, label.padding = unit(0.2, "lines"),
+                             col="red", aes(label=feature), nudge_x = 0, nudge_y = 0.01)
+  
+  leg <- cowplot::get_legend(p)
+  
+  
+  
+  ###### PLOT
+  cat( paste('### ', lev, '\n' ) )
+  
+  grid.arrange(p + theme(legend.position = "none"),
+             p1 + theme(legend.position = "none"),
+             leg,
+             layout_matrix = rbind(c(1, 1, 1, 3),
+                                   c(2, 2, 2, 3)),
+             top = sprintf("%s", lev))
+  
+  cat('\n \n')
+  
+}
+
+```
+
+
+# 5. Individual lipid analysis {.tabset}
+
+All reported compounds plotted based on a factor
+
+## 5.0
+
+Scroll Right!!!
+
+## 5.1 Boxplots by `r pca_factor2` {.tabset .tabset-fade}
+
+- All reported compounds plotted based on a factor
+
+```{r, results='asis', echo = FALSE, include=T, warning=FALSE, fig.width=8, fig.height=6}
+
+
+#Plot compounds by injection order
+# Filter data
+filter_wf = 
+  filter_smeta(mode = "include",
+               levels = inc_levels, 
+               factor_name = inc_factor)
+
+
+sample_data =  predicted(model_apply(filter_wf, importData))
+
+sample_data = sample_data$data %>%
+  mutate(treatment = sprintf("%s_%s", sample_data$sample_meta[[factor_bps1]], sample_data$sample_meta[[factor_bps2]])) %>%
+  select(treatment, everything())
+
+#Generate plots
+
+for (compound in compound_names)   {
+  
+  compound_col = which(colnames(sample_data) == compound)
+  
+  axis.graphtitle.text <- element_text(face = "bold", color = "black", size = 12) #Label style
+  axis.graph.text <- element_text(face = "bold", color = "black", size = 8)
+  
+  axis.limit.value <- quantile(sample_data[,compound_col], prob = 1, na.rm=TRUE)*1.3 # 40% extra limit for each compound. Quantiles are used to have most of the compounds on the graph. Extreme outliers may be out.
+  
+  
+  #Create graph Sample ID
+  not_detected = c()
+  
+  if(all(is.na(unlist(sample_data[,compound_col])))){
+    not_detected  = c(not_detected, sprintf("%s not detected", compound))
+  } else{
+    
+    p <- ggplot(sample_data, aes(`treatment`, unlist(sample_data[,compound_col]))) +
+      theme_classic() +
+      geom_boxplot(aes(fill = treatment), alpha = 0.1) +
+      geom_point(aes(color = treatment), size = 4, alpha = 0.5) +
+      ylim(c(0,axis.limit.value)) +
+      labs(x="Treatment", y = units) + 
+      theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), legend.position="none") +
+      #theme(legend.position="bottom", axis.text.x=element_text(angle = 0, hjust = 0.5, vjust = 0), axis.title = axis.graphtitle.text, axis.text = axis.graph.text) +
+      ggtitle(compound)
+    
+    cat( paste('### ', compound, '\n' ) )
+    print(p)
+    cat('\n \n')
+  }
+}
+
+print(not_detected)
+
+```
+
+
+## 5.2 Compound intensity plots {.tabset .tabset-fade}
+
+```{r, results="asis", echo = FALSE, include=T, warning=FALSE, fig.width=10, fig.height=5}
+
+#Plot compounds by injection order
+
+# Filter data
+filter_wf = 
+    filter_smeta(mode = "include",
+               levels = comp_int_levels, 
+               factor_name = comp_int_factor)
+
+
+injection_data =  predicted(model_apply(filter_wf, importData))
+
+injection_data = injection_data$data %>%
+  mutate(type = injection_data$sample_meta[[comp_int_id_header]],
+         injection_order = injection_data$sample_meta$Injection_order) %>%
+  select(type, injection_order, everything())
+
+
+# Iterate over each compound
+
+for (compound in compound_names)   {
+
+  compound_col = which(colnames(injection_data) == compound)
+  
+  # Set axis limits
+  axis.graphtitle.text <- element_text(face = "bold", color = "black", size = 12) #Label style
+  axis.graph.text <- element_text(face = "bold", color = "black", size = 8)
+  
+  axis.limit.value <- quantile(injection_data[,compound_col], prob = 0.95, na.rm=TRUE)*1.2
+  
+  axis.limit.valueq75 <- quantile(injection_data[,compound_col], prob = 0.95, na.rm=TRUE)*1.2
+
+  
+  #Generate plot
+    
+  p <- ggplot(injection_data, aes(`injection_order`, unlist(injection_data[,compound_col]))) +
+    theme_classic() +   
+    geom_point(aes(color = type), size = 3, alpha = 0.6) +
+    labs(x="Injection order", y = units) + 
+    theme(legend.position="bottom", axis.text.x=element_text(angle = 0, hjust = 0.5, vjust = 0), 
+          axis.title = axis.graphtitle.text, axis.text = axis.graph.text) +
+      ggtitle(compound)
+  
+  
+  cat( paste('### ', compound, '\n' ) )
+  print(p)
+  cat('\n \n')
+
+}
+
+
+```
+
+
+# 6. Selection of samples
+
+Finally, samples are selected as a combination of confirmed detection, presence in blanks and presence in at least 5 samples.
+
+Different Tables are Exported to be included in the final report.
+
+
+```{r}
+
+
+# Select compounds to be included. Includes final filter by %CV and technical judgement
+
+#compoundInfo_final<- compoundInfo %>% filter(Report == "YES") %>%
+#                              select(-"Integration",-"our.coments",-"Included", -"Detected",
+#                                      -"Include",-"Report",-"Use_type")
+
+
+#compoundInfo_excluded <- compoundInfo %>% filter(Included == "YES", Report == "NO") %>% 
+#                                       select(-"Integration",-"our.coments",-"Included", -"Detected",
+#                                      -"Include",-"Report",-"Use_type")
+
+#compound_excluded <- compoundInfo_excluded %>% select(Compound_name) %>% as.vector()
+
+#compound_included<- compoundInfo_final %>% select(Compound_name) %>% as.vector()
+
+#smetadata <- colnames(samples_file_replaced [1:35])
+
+#finalfile_names_plasma <- samples_file_replaced %>% select(smetadata, compound_included[,1])
+
+
+
+# Export files to merge in a the final report.
+# This can be done with xlsx package for direct organization in Sheets but there are troubles with Java and Biomedicum computers
+# Doing it with write_xlsx will be more practical (the files are edited later anyway)
+
+#write_xlsx(finalfile_names_plasma, "FinalResults/ResultsFile_Replaced.xlsx") # The final datatable
+
+#write_xlsx(compoundInfo_final, "FinalResults/ReportedCompoundMetadata_Replaced.xlsx") 
+#write_xlsx(compoundInfo_excluded, "FinalResults/ReportedCompoundMetadataEx_Replaced.xlsx") 
+
+#Save file for future R data processing
+
+#list_selected_data <- list(finalfile_names_plasma = finalfile_names_plasma,
+#                           compoundInfo_final = compoundInfo_final,
+#                           compoundInfo_excluded = compoundInfo_excluded)
+
+#saveRDS(list_selected_data, file = sprintf("%s/FinalData_Set_SL_Replaced.RDS", result_dir))
+
+
+```
+
+
+# 7. Final considerations {.tabset}
+
+List of compounds reported and excluded from the final results
+
+## 7.1. Compounds included
+
+```{r}
+
+#DT::datatable(compoundInfo_final,
+#  caption = "Summary of Compounds included")
+
+```
+
+## 7.2 Compounds excluded
+
+```{r}
+
+#DT::datatable(compoundInfo_excluded,
+#  caption = "Summary of Compounds included")
+
+```
+
+
+
+# 8. Session Information
+
+Packages used for the creation of this file
+
+```{r session, echo = FALSE, warning=FALSE}
+
+sessionInfo()
+
+```
+
+
