@@ -12,6 +12,4 @@ Install
 Github
 ------------
 
-.. code-block:: r
-
 remotes::install_github("targeted-lipidomics/lipidomicsAnalyzeR", ref="devel")
